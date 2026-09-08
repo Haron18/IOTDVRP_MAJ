@@ -82,7 +82,8 @@ DEFAULTS = {
     "priority_overrides": {}, # id -> priorité forcée (ALERTE_TEMPERATURE)
     "vehicle_breakdown_count": 0,  # nb de camions mis hors service (PANNE_VEHICULE)
     "traffic_penalty": 1.0,   # multiplicateur appliqué à la matrice de distances
-    "truck_progress": {},     # avancement (0.0 à 1.0) de chaque camion sur sa rotation
+    "truck_progress_km": {},  # distance déjà parcourue (km) par chaque camion sur sa rotation
+    "delivered_ids": set(),   # commandes déjà livrées (calculé à partir du tracking)
 }
 for key, default in DEFAULTS.items():
     if key not in st.session_state:
@@ -141,13 +142,36 @@ manual_event_type = st.sidebar.selectbox(
     ["AUCUN", "NOUVELLE_COMMANDE", "ANNULATION_COMMANDE", "EMBOUTEILLAGE", "ROUTE_FERMEE",
      "PANNE_VEHICULE", "ALERTE_TEMPERATURE", "SORTIE_ZONE", "CLIENT_ABSENT"],
 )
+
+manual_cancel_target = None
+if manual_event_type == "ANNULATION_COMMANDE":
+    known_ids_now = pd.concat(
+        [df_orders["id"], pd.Series([o["id"] for o in st.session_state.extra_orders], dtype=str)]
+    )
+    # Seules les commandes pas encore livrées (ni déjà annulées) peuvent être choisies —
+    # "delivered_ids" est recalculé à chaque affichage de la carte à partir de la
+    # progression réelle des camions sur leur tournée.
+    cancellable_ids = [
+        i for i in known_ids_now
+        if i not in st.session_state.cancelled_ids and i not in st.session_state.delivered_ids
+    ]
+    if cancellable_ids:
+        manual_cancel_target = st.sidebar.selectbox(
+            "Commande à annuler (non encore livrée)", cancellable_ids,
+        )
+    else:
+        st.sidebar.caption("Aucune commande annulable : toutes livrées ou déjà annulées.")
+
 if st.sidebar.button("⚠️ Appliquer l'événement") and manual_event_type != "AUCUN":
     decision = process_dynamic_event(manual_event_type, {"vehicle_id": "V1"})
     known_ids = pd.concat(
         [df_orders["id"], pd.Series([o["id"] for o in st.session_state.extra_orders], dtype=str)]
     )
     candidate_ids = [i for i in known_ids if i not in st.session_state.cancelled_ids]
-    detail = apply_event_effect(manual_event_type, st.session_state, depot_coords, sim_time, candidate_ids)
+    detail = apply_event_effect(
+        manual_event_type, st.session_state, depot_coords, sim_time, candidate_ids,
+        manual_target=manual_cancel_target,
+    )
     message = decision["message"] + (f" — {detail}" if detail else "")
     log_event(f"{manual_event_type} → {decision['action']} ({message})")
     st.rerun()
@@ -231,7 +255,7 @@ sim_minutes_per_real_second = 60 / (real_minutes_per_sim_hour * 60)
 col_track1, col_track2 = st.sidebar.columns(2)
 manual_advance_clicked = col_track1.button("➡️ +10 min simulées")
 if col_track2.button("🔄 Réinitialiser tracking"):
-    st.session_state.truck_progress = {}
+    st.session_state.truck_progress_km = {}
 
 st.sidebar.markdown("---")
 auto_run = st.sidebar.toggle("▶️ Simulation temps réel (auto-refresh)", value=False)
@@ -444,18 +468,35 @@ with col_map:
     # Tracking simulé : position de chaque camion sur sa rotation complète (multi-trajets),
     # calculée à partir d'une VITESSE RÉELLE (km/h) et du temps simulé écoulé — pas d'un
     # pas arbitraire. truck_gps_status[] alimente ensuite le tableau de coordonnées GPS.
+    #
+    # On mémorise la distance RÉELLEMENT parcourue (km), pas une fraction (%) : après une
+    # réoptimisation (ex. annulation d'une commande non livrée → OR-Tools recalcule des
+    # tournées de longueur différente), le camion reprend exactement où il en était
+    # (mêmes km déjà roulés) au lieu de "sauter" en avant ou en arrière sur la nouvelle
+    # tournée, ce qu'un pourcentage recalculé sur une distance totale changée aurait fait.
     truck_gps_status = []
+    delivered_ids: set[str] = set()  # commandes déjà livrées, tous camions confondus
     for p_idx, shape in full_shapes.items():
         total_km = sum(trip_lengths[p_idx])
+        traveled_km = st.session_state.truck_progress_km.get(p_idx, 0.0)
+        if sim_minutes_elapsed_this_tick > 0:
+            traveled_km += truck_speed_kmh * (sim_minutes_elapsed_this_tick / 60)
+        traveled_km = min(traveled_km, total_km)
+        st.session_state.truck_progress_km[p_idx] = traveled_km
+
+        new_progress = (traveled_km / total_km) if total_km > 0 else 0.0
         total_duration_min = (total_km / truck_speed_kmh * 60) if truck_speed_kmh > 0 else 0
 
-        previous_progress = st.session_state.truck_progress.get(p_idx, 0.0)
-        if total_duration_min > 0 and sim_minutes_elapsed_this_tick > 0:
-            increment = sim_minutes_elapsed_this_tick / total_duration_min
-            new_progress = min(1.0, previous_progress + increment)
-        else:
-            new_progress = previous_progress
-        st.session_state.truck_progress[p_idx] = new_progress
+        # Marque comme "livrée" toute commande dont l'arrêt est dépassé par la distance
+        # déjà parcourue par ce camion sur sa rotation — sert à ne proposer à l'annulation
+        # manuelle (voir barre latérale) que les commandes pas encore livrées.
+        cum_km = 0.0
+        for route in truck_trips[p_idx]:
+            for i in range(len(route) - 1):
+                cum_km += raw_dist_matrix[route[i]][route[i + 1]] / 1000
+                node = route[i + 1]
+                if node != 0 and cum_km <= traveled_km:
+                    delivered_ids.add(active_orders.iloc[node - 1]["id"])
 
         if not shape:
             continue
@@ -482,6 +523,8 @@ with col_map:
             "Avancement": f"{new_progress * 100:.0f}%",
             "Temps restant (min sim.)": round(remaining_min),
         })
+
+    st.session_state.delivered_ids = delivered_ids
 
     st_folium(m, width="100%", height=520, key="dvrp_map")
 

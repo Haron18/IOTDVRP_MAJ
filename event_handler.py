@@ -99,7 +99,8 @@ def generate_random_order(depot_coords: tuple[float, float], sim_time: int) -> d
 
 
 def apply_event_effect(event_type: str, session_state, depot_coords: tuple[float, float],
-                        sim_time: int, candidate_ids: list[str]) -> str | None:
+                        sim_time: int, candidate_ids: list[str],
+                        manual_target: str | None = None) -> str | None:
     """Applique l'effet CONCRET d'un événement sur l'état de la simulation
     (`session_state`), pour qu'il soit réellement pris en compte au prochain
     calcul OR-Tools — au lieu d'être seulement journalisé.
@@ -107,6 +108,12 @@ def apply_event_effect(event_type: str, session_state, depot_coords: tuple[float
     `candidate_ids` = identifiants de commandes actuellement connues, dans
     lesquels piocher pour les événements qui ciblent une commande existante
     (annulation, absence client, alerte température).
+
+    `manual_target` = identifiant choisi explicitement par l'utilisateur (ex. commande
+    à annuler sélectionnée dans l'interface). S'il est fourni ET valide (présent dans
+    `candidate_ids`), il est utilisé à la place du tirage aléatoire — utile pour
+    ANNULATION_COMMANDE, où l'utilisateur choisit lui-même la commande à retirer
+    (uniquement parmi celles pas encore livrées, filtrées en amont côté interface).
 
     Retourne un court complément d'information à afficher dans le log, ou None.
     """
@@ -116,7 +123,10 @@ def apply_event_effect(event_type: str, session_state, depot_coords: tuple[float
         return f"commande {new_order['id']} créée ({new_order['demand_kg']} kg)"
 
     if event_type in ("ANNULATION_COMMANDE", "CLIENT_ABSENT") and candidate_ids:
-        target = str(np.random.choice(candidate_ids))
+        if manual_target and manual_target in candidate_ids:
+            target = manual_target
+        else:
+            target = str(np.random.choice(candidate_ids))
         session_state.cancelled_ids.add(target)
         return f"commande {target} retirée de la tournée"
 
