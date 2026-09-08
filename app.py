@@ -32,7 +32,7 @@ Corrections apportées par rapport à la version générée initialement :
    (après pannes) dans les indicateurs et les messages d'erreur.
 10. ROTATIONS MULTIPLES (capacité insuffisante) : un camion peut désormais
     effectuer plusieurs allers-retours au dépôt si la capacité totale ne
-    suffit pas en un seul passage (paramètre « Trajets max par camion »).
+    suffit pas en un seul passage (nombre de rotations calculé automatiquement).
     Modélisé via des véhicules « virtuels » (camion x trajets max) pour
     OR-Tools, regroupés ensuite par camion physique (dvrp_engine.py :
     group_multi_trip_routes). Le temps de rechargement au dépôt entre deux
@@ -45,6 +45,7 @@ Corrections apportées par rapport à la version générée initialement :
     avec les tournées calculées.
 """
 
+import math
 import time
 from datetime import datetime
 
@@ -123,11 +124,9 @@ sim_time = st.sidebar.slider(
          "heure d'apparition (release_time) est inférieure ou égale à cette valeur.",
 )
 st.sidebar.caption(f"⏱️ {sim_time // 60}h{sim_time % 60:02d} écoulées depuis le début de la tournée")
-max_trips_per_vehicle = st.sidebar.slider(
-    "Trajets max par camion (rotations)", 1, 3, 1,
-    help="Si la capacité totale est insuffisante pour tout livrer en un seul passage, "
-         "autorise chaque camion à revenir au dépôt se recharger et repartir. "
-         "Le temps de rechargement au dépôt n'est pas modélisé (supposé instantané).",
+st.sidebar.caption(
+    "🔁 Rotations : calculées automatiquement selon la demande totale et la capacité "
+    "disponible (pas de réglage manuel nécessaire)."
 )
 
 # ----------------------------------------------------------------------------
@@ -283,6 +282,16 @@ if effective_vehicles < num_vehicles:
 coords_list = [depot_coords] + list(zip(active_orders["lat"], active_orders["lon"]))
 demands = [0] + active_orders["demand_kg"].astype(int).tolist()
 
+# Nombre de rotations par camion calculé automatiquement à partir de la demande totale
+# et de la capacité réellement disponible (plus besoin de régler un curseur manuel).
+# +1 rotation de marge : laisse au solveur une capacité légèrement excédentaire pour
+# répartir les tournées efficacement (sinon, avec le compte pile, il peut n'exister
+# aucune répartition valide même quand la capacité totale suffit tout juste).
+total_demand = int(active_orders["demand_kg"].sum())
+max_trips_per_vehicle = max(
+    1, math.ceil(total_demand / (effective_vehicles * vehicle_capacity)) + 1
+)
+
 # Le solveur reçoit des véhicules "virtuels" (camion physique x trajets max autorisés),
 # tous de même capacité : ça lui permet de répartir une commande sur plusieurs rotations
 # d'un même camion si la capacité en un seul passage ne suffit pas.
@@ -301,19 +310,13 @@ with st.spinner("Calcul des distances et optimisation des tournées..."):
         solver_dist_matrix = (np.array(raw_dist_matrix) * st.session_state.traffic_penalty).tolist()
     virtual_routes = solve_dvrp_ortools(solver_dist_matrix, demands, vehicle_capacities)
 
-total_demand = int(active_orders["demand_kg"].sum())
 total_capacity = vehicle_capacity * virtual_vehicle_count
 if not virtual_routes:
-    extra_hint = (
-        " Essayez d'augmenter le nombre de « Trajets max par camion » pour autoriser des "
-        "rotations supplémentaires."
-        if max_trips_per_vehicle < 3 else ""
-    )
     st.error(
-        f"⚠️ Aucune tournée réalisable : {total_demand} kg de commandes pour seulement "
+        f"⚠️ Aucune tournée réalisable : {total_demand} kg de commandes pour "
         f"{total_capacity} kg de capacité totale disponible ({effective_vehicles} véhicule(s) "
-        f"x {max_trips_per_vehicle} trajet(s) max).{extra_hint} Vous pouvez aussi augmenter le "
-        f"nombre de véhicules, leur capacité, ou réinitialiser les événements."
+        f"x {max_trips_per_vehicle} rotation(s), calculées automatiquement). "
+        f"Augmentez le nombre de véhicules ou leur capacité, ou réinitialisez les événements."
     )
     st.stop()
 
