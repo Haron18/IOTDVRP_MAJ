@@ -465,9 +465,12 @@ with col_map:
             full_shapes[p_idx].extend(trip_shape)
             trip_lengths[p_idx].append(route_distance(route, raw_dist_matrix) / 1000)
 
-    # Tracking simulé : position de chaque camion sur sa rotation complète (multi-trajets),
-    # calculée à partir d'une VITESSE RÉELLE (km/h) et du temps simulé écoulé — pas d'un
-    # pas arbitraire. truck_gps_status[] alimente ensuite le tableau de coordonnées GPS.
+    # Tracking simulé : position de TOUS les camions physiques (0 à effective_vehicles-1),
+    # pas seulement ceux ayant une tournée assignée par le solveur. En effet, OR-Tools
+    # minimise la distance totale sans coût fixe par véhicule : si la capacité d'un seul
+    # camion suffit à tout livrer, il n'utilisera QUE ce camion (comportement correct pour
+    # l'optimisation, mais qui faisait disparaître les autres camions de la carte). On
+    # affiche donc désormais aussi les camions inutilisés, immobiles au dépôt.
     #
     # On mémorise la distance RÉELLEMENT parcourue (km), pas une fraction (%) : après une
     # réoptimisation (ex. annulation d'une commande non livrée → OR-Tools recalcule des
@@ -476,7 +479,27 @@ with col_map:
     # tournée, ce qu'un pourcentage recalculé sur une distance totale changée aurait fait.
     truck_gps_status = []
     delivered_ids: set[str] = set()  # commandes déjà livrées, tous camions confondus
-    for p_idx, shape in full_shapes.items():
+    for p_idx in range(effective_vehicles):
+        shape = full_shapes.get(p_idx, [])
+
+        if not shape:
+            # Camion non utilisé pour cette tournée : reste visible, immobile au dépôt.
+            folium.Marker(
+                depot_coords,
+                popup=f"<b>Camion V{p_idx + 1}</b><br>🅿️ Au dépôt (non utilisé pour cette tournée)",
+                tooltip=f"V{p_idx + 1} — Au dépôt",
+                icon=folium.Icon(color=route_colors[p_idx % len(route_colors)], icon="truck", prefix="fa"),
+            ).add_to(m)
+            truck_gps_status.append({
+                "Camion": f"V{p_idx + 1}",
+                "Statut": "🅿️ Au dépôt (non utilisé)",
+                "Latitude": round(depot_coords[0], 5),
+                "Longitude": round(depot_coords[1], 5),
+                "Avancement": "—",
+                "Temps restant (min sim.)": "—",
+            })
+            continue
+
         total_km = sum(trip_lengths[p_idx])
         traveled_km = st.session_state.truck_progress_km.get(p_idx, 0.0)
         if sim_minutes_elapsed_this_tick > 0:
