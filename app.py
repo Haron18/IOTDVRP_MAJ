@@ -485,7 +485,7 @@ with col_details:
         height=260,
     )
 
-    st.subheader("🚚 Séquence de l'itinéraire construite")
+    st.subheader("🗺️ Séquence de l'itinéraire construite")
     for p_idx, trips in truck_trips.items():
         truck_total_km = sum(route_distance(r, raw_dist_matrix) for r in trips) / 1000
         truck_total_load = sum(
