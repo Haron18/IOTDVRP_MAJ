@@ -251,13 +251,21 @@ elif auto_run:
 # 6. APPLICATION DES EFFETS DES ÉVÉNEMENTS SUR LE JEU DE DONNÉES
 # ----------------------------------------------------------------------------
 if st.session_state.extra_orders:
+    new_ids = {o["id"] for o in st.session_state.extra_orders}
     df_orders = pd.concat(
         [df_orders, pd.DataFrame(st.session_state.extra_orders, columns=COLUMNS)],
         ignore_index=True,
     )
+else:
+    new_ids = set()
 
-if st.session_state.cancelled_ids:
-    df_orders = df_orders[~df_orders["id"].isin(st.session_state.cancelled_ids)]
+# Statut affiché dans le tableau (n'affecte pas le calcul des tournées) :
+# une commande annulée n'est plus retirée du jeu de données, elle est simplement
+# exclue du calcul de tournée plus bas tout en restant visible avec son état.
+df_orders["status"] = df_orders["id"].apply(
+    lambda i: "❌ Retirée" if i in st.session_state.cancelled_ids
+    else ("🆕 Nouvelle" if i in new_ids else "✅ Normale")
+)
 
 if st.session_state.priority_overrides:
     df_orders = df_orders.copy()
@@ -265,8 +273,15 @@ if st.session_state.priority_overrides:
         lambda r: st.session_state.priority_overrides.get(r["id"], r["priority"]), axis=1
     )
 
-# Commandes "visibles" à l'instant t de la simulation (release_time <= sim_time)
-active_orders = df_orders[df_orders["release_time"] <= sim_time].reset_index(drop=True)
+# Commandes "visibles" à l'instant t de la simulation (release_time <= sim_time),
+# pour l'affichage : inclut les commandes annulées (marquées "❌ Retirée").
+display_orders = df_orders[df_orders["release_time"] <= sim_time].reset_index(drop=True)
+
+# Commandes réellement routables (exclut les commandes annulées) : c'est CE sous-ensemble
+# qui sert au calcul des tournées (coords_list / demands / index des routes OR-Tools).
+active_orders = display_orders[
+    ~display_orders["id"].isin(st.session_state.cancelled_ids)
+].reset_index(drop=True)
 
 if len(active_orders) == 0:
     st.info("Aucune commande active à cet instant — avancez le curseur « Temps écoulé ».")
@@ -479,7 +494,9 @@ with col_map:
 with col_details:
     st.subheader("📦 Commandes actives")
     st.dataframe(
-        active_orders[["id", "client", "demand_kg", "priority", "type"]],
+        display_orders[["id", "client", "demand_kg", "priority", "type", "status"]].rename(
+            columns={"status": "État"}
+        ),
         hide_index=True,
         use_container_width=True,
         height=260,
