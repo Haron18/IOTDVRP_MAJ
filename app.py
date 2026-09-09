@@ -84,6 +84,9 @@ DEFAULTS = {
     "traffic_penalty": 1.0,   # multiplicateur appliqué à la matrice de distances
     "truck_progress_km": {},  # distance déjà parcourue (km) par chaque camion sur sa rotation
     "delivered_ids": set(),   # commandes déjà livrées (calculé à partir du tracking)
+    "sim_clock_min": 45.0,     # horloge de simulation UNIQUE (min depuis le début de journée) :
+                               # pilote à la fois l'apparition des commandes ET le tracking
+                               # des camions ; avance automatiquement avec la simulation.
 }
 for key, default in DEFAULTS.items():
     if key not in st.session_state:
@@ -119,16 +122,69 @@ else:
 st.sidebar.header("🕹 Contrôle de la simulation")
 num_vehicles = st.sidebar.slider("Camions frigorifiques disponibles", 1, 4, 2)
 vehicle_capacity = st.sidebar.slider("Capacité par camion (kg)", 100, 1000, 400, step=50)
-sim_time = st.sidebar.slider(
-    "Temps écoulé dans la journée (min)", 0, 480, 45, step=15,
-    help="Jusqu'à 8h de journée simulée. Une commande n'apparaît que si son "
-         "heure d'apparition (release_time) est inférieure ou égale à cette valeur.",
-)
-st.sidebar.caption(f"⏱️ {sim_time // 60}h{sim_time % 60:02d} écoulées depuis le début de la tournée")
 st.sidebar.caption(
     "🔁 Rotations : calculées automatiquement selon la demande totale et la capacité "
     "disponible (pas de réglage manuel nécessaire)."
 )
+
+st.sidebar.markdown("---")
+st.sidebar.header("📍 Horloge de simulation & tracking des camions")
+st.sidebar.caption(
+    "Une seule horloge de simulation pilote à la fois l'apparition des commandes et le "
+    "déplacement réel des camions (vitesse moyenne, sur le tracé réel de chaque tournée)."
+)
+truck_speed_kmh = st.sidebar.slider(
+    "Vitesse moyenne des camions (km/h)", 15, 60, 30,
+    help="Vitesse commerciale en zone urbaine (arrêts, feux, trafic inclus). "
+         "Détermine le temps réel nécessaire pour parcourir chaque tournée.",
+)
+time_accel_options = {
+    "Temps réel (1h simulée = 60 min réelles)": 60,
+    "Rapide (1h simulée = 10 min réelles)": 10,
+    "Très rapide (1h simulée = 5 min réelles)": 5,
+    "Ultra rapide (1h simulée = 1 min réelle)": 1,
+}
+time_accel_label = st.sidebar.selectbox(
+    "Vitesse d'accélération du temps", list(time_accel_options.keys()), index=2,
+)
+real_minutes_per_sim_hour = time_accel_options[time_accel_label]
+sim_minutes_per_real_second = 60 / (real_minutes_per_sim_hour * 60)
+
+col_track1, col_track2 = st.sidebar.columns(2)
+manual_advance_clicked = col_track1.button("➡️ +10 min simulées")
+if col_track2.button("🔄 Réinitialiser l'horloge"):
+    st.session_state.truck_progress_km = {}
+    st.session_state.sim_clock_min = 45.0
+
+auto_run = st.sidebar.toggle("▶️ Simulation temps réel (auto-refresh)", value=False)
+sim_speed = st.sidebar.slider("Fréquence de rafraîchissement (sec)", 2, 10, 3)
+
+# Combien de "minutes simulées" doivent s'écouler à ce tour de boucle : un pas fixe
+# (bouton manuel) ou dérivé de la fréquence de rafraîchissement et du facteur
+# d'accélération (auto-refresh). Ce même delta fait avancer à la fois l'horloge de
+# simulation ci-dessous ET le tracking des camions plus loin dans le script — un seul
+# temps qui s'écoule, au lieu de deux horloges déconnectées comme avant.
+sim_minutes_elapsed_this_tick = 0.0
+if manual_advance_clicked:
+    sim_minutes_elapsed_this_tick = 10.0
+elif auto_run:
+    sim_minutes_elapsed_this_tick = sim_speed * sim_minutes_per_real_second
+
+if sim_minutes_elapsed_this_tick > 0:
+    st.session_state.sim_clock_min = min(
+        1440.0, st.session_state.sim_clock_min + sim_minutes_elapsed_this_tick
+    )
+
+sim_time = st.sidebar.slider(
+    "🕐 Temps de simulation (min depuis le début de journée)", 0.0, 1440.0, step=5.0,
+    format="%.0f",
+    key="sim_clock_min",
+    help="Avance automatiquement avec le tracking des camions (bouton « +10 min » ou "
+         "auto-refresh). Déplacez-le manuellement pour vous replacer à un instant précis "
+         "— l'avancée automatique reprendra ensuite à partir de cette nouvelle valeur.",
+)
+sim_time = int(sim_time)
+st.sidebar.caption(f"⏱️ {sim_time // 60}h{sim_time % 60:02d} écoulées depuis le début de la tournée")
 
 # ----------------------------------------------------------------------------
 # 4. BARRE LATÉRALE — ÉVÉNEMENTS DYNAMIQUES (désormais réellement actifs)
@@ -230,46 +286,6 @@ if st.session_state.mqtt_bridge is not None:
         st.sidebar.info(f"Commande {cmd_type} envoyée à {target_v}")
 
 st.sidebar.markdown("---")
-st.sidebar.header("📍 Tracking simulé des camions")
-st.sidebar.caption(
-    "Position GPS calculée localement à partir d'une vitesse moyenne réaliste, sur le "
-    "tracé réel de la rotation complète de chaque camion — indépendant de MQTT."
-)
-truck_speed_kmh = st.sidebar.slider(
-    "Vitesse moyenne des camions (km/h)", 15, 60, 30,
-    help="Vitesse commerciale en zone urbaine (arrêts, feux, trafic inclus). "
-         "Détermine le temps réel nécessaire pour parcourir chaque tournée.",
-)
-time_accel_options = {
-    "Temps réel (1h simulée = 60 min réelles)": 60,
-    "Rapide (1h simulée = 10 min réelles)": 10,
-    "Très rapide (1h simulée = 5 min réelles)": 5,
-    "Ultra rapide (1h simulée = 1 min réelle)": 1,
-}
-time_accel_label = st.sidebar.selectbox(
-    "Vitesse d'accélération du temps", list(time_accel_options.keys()), index=2,
-)
-real_minutes_per_sim_hour = time_accel_options[time_accel_label]
-sim_minutes_per_real_second = 60 / (real_minutes_per_sim_hour * 60)
-
-col_track1, col_track2 = st.sidebar.columns(2)
-manual_advance_clicked = col_track1.button("➡️ +10 min simulées")
-if col_track2.button("🔄 Réinitialiser tracking"):
-    st.session_state.truck_progress_km = {}
-
-st.sidebar.markdown("---")
-auto_run = st.sidebar.toggle("▶️ Simulation temps réel (auto-refresh)", value=False)
-sim_speed = st.sidebar.slider("Fréquence de rafraîchissement (sec)", 2, 10, 3)
-
-# Combien de "minutes simulées" doivent s'écouler pour le tracking à ce tour de boucle :
-# soit un pas fixe (bouton manuel), soit dérivé de la fréquence de rafraîchissement et du
-# facteur d'accélération choisi (auto-refresh) — c'est ce qui donne un mouvement à vitesse
-# CONSTANTE et réaliste, au lieu d'un pas arbitraire par rafraîchissement.
-sim_minutes_elapsed_this_tick = 0.0
-if manual_advance_clicked:
-    sim_minutes_elapsed_this_tick = 10.0
-elif auto_run:
-    sim_minutes_elapsed_this_tick = sim_speed * sim_minutes_per_real_second
 
 # ----------------------------------------------------------------------------
 # 6. APPLICATION DES EFFETS DES ÉVÉNEMENTS SUR LE JEU DE DONNÉES
@@ -308,7 +324,7 @@ active_orders = display_orders[
 ].reset_index(drop=True)
 
 if len(active_orders) == 0:
-    st.info("Aucune commande active à cet instant — avancez le curseur « Temps écoulé ».")
+    st.info("Aucune commande active à cet instant — avancez le curseur « Temps de simulation ».")
     st.stop()
 
 effective_vehicles = max(1, num_vehicles - st.session_state.vehicle_breakdown_count)
