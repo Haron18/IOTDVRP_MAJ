@@ -49,12 +49,12 @@ import math
 import time
 from datetime import datetime
 
-import folium
 import numpy as np
 import pandas as pd
 import streamlit as st
-from streamlit_folium import st_folium
+import streamlit.components.v1 as components
 
+from animated_map import render_animated_map_html
 from benchmark_loader import COLUMNS, get_real_algiers_dataset, generate_solomon_benchmark
 from dvrp_engine import (
     get_osrm_distance_matrix,
@@ -435,50 +435,33 @@ col_map, col_details = st.columns([2, 1])
 
 with col_map:
     st.subheader("🗺 Carte des tournées optimisées (réseau routier réel OSRM)")
-    m = folium.Map(location=depot_coords, zoom_start=11, tiles="OpenStreetMap")
-
-    folium.Marker(
-        depot_coords,
-        popup="<b>Dépôt Central — Oued Smar</b>",
-        icon=folium.Icon(color="black", icon="home", prefix="fa"),
-    ).add_to(m)
 
     priority_color = {"URGENTE": "red", "HAUTE": "orange", "NORMALE": "blue"}
-    for _, row in active_orders.iterrows():
-        folium.Marker(
-            [row["lat"], row["lon"]],
-            popup=(f"<b>{row['client']}</b><br>Charge: {row['demand_kg']} kg<br>"
-                   f"Temp. max: {row['temp_max']}°C<br>Fenêtre: {row['time_window']}"),
-            tooltip=row["id"],
-            icon=folium.Icon(color=priority_color.get(row["priority"], "blue"),
-                              icon="shopping-cart", prefix="fa"),
-        ).add_to(m)
+    orders_payload = active_orders[
+        ["id", "client", "lat", "lon", "demand_kg", "temp_max", "time_window", "priority"]
+    ].to_dict("records")
 
     route_colors = ["blue", "green", "purple", "orange", "darkred", "cadetblue"]
-    dash_patterns = [None, "8,8", "2,6"]  # trajet 1 = trait plein, trajet 2 = tirets, trajet 3 = pointillés
 
     # full_shapes[p] = tracé combiné de TOUTE la rotation du camion physique p (tous
     # trajets mis bout à bout), utilisé ensuite pour le tracking simulé.
     full_shapes: dict[int, list[list[float]]] = {}
     trip_lengths: dict[int, list[float]] = {}
+    trip_shapes: dict[int, list[list[list[float]]]] = {}
 
     for p_idx, trips in truck_trips.items():
-        color = route_colors[p_idx % len(route_colors)]
         full_shapes[p_idx] = []
         trip_lengths[p_idx] = []
-        for t_idx, route in enumerate(trips):
-            dash = dash_patterns[t_idx % len(dash_patterns)]
+        trip_shapes[p_idx] = []
+        for route in trips:
             trip_shape: list[list[float]] = []
             for i in range(len(route) - 1):
                 p1 = coords_list[route[i]]
                 p2 = coords_list[route[i + 1]]
                 path = get_osrm_route_shape(tuple(p1), tuple(p2))
                 trip_shape.extend(path)
-                folium.PolyLine(
-                    path, color=color, weight=4, opacity=0.85, dash_array=dash,
-                    tooltip=f"Camion V{p_idx + 1} — Trajet {t_idx + 1}/{len(trips)}",
-                ).add_to(m)
             full_shapes[p_idx].extend(trip_shape)
+            trip_shapes[p_idx].append(trip_shape)
             trip_lengths[p_idx].append(route_distance(route, raw_dist_matrix) / 1000)
 
     # Tracking simulé : position de TOUS les camions physiques (0 à effective_vehicles-1),
@@ -494,18 +477,18 @@ with col_map:
     # (mêmes km déjà roulés) au lieu de "sauter" en avant ou en arrière sur la nouvelle
     # tournée, ce qu'un pourcentage recalculé sur une distance totale changée aurait fait.
     truck_gps_status = []
+    trucks_payload = []
     delivered_ids: set[str] = set()  # commandes déjà livrées, tous camions confondus
     for p_idx in range(effective_vehicles):
+        color = route_colors[p_idx % len(route_colors)]
         shape = full_shapes.get(p_idx, [])
 
         if not shape:
             # Camion non utilisé pour cette tournée : reste visible, immobile au dépôt.
-            folium.Marker(
-                depot_coords,
-                popup=f"<b>Camion V{p_idx + 1}</b><br>🅿️ Au dépôt (non utilisé pour cette tournée)",
-                tooltip=f"V{p_idx + 1} — Au dépôt",
-                icon=folium.Icon(color=route_colors[p_idx % len(route_colors)], icon="truck", prefix="fa"),
-            ).add_to(m)
+            trucks_payload.append({
+                "label": f"V{p_idx + 1}", "color": color, "used": False,
+                "status_label": "🅿️ Au dépôt (non utilisé)",
+            })
             truck_gps_status.append({
                 "Camion": f"V{p_idx + 1}",
                 "Statut": "🅿️ Au dépôt (non utilisé)",
@@ -537,23 +520,19 @@ with col_map:
                 if node != 0 and cum_km <= traveled_km:
                     delivered_ids.add(active_orders.iloc[node - 1]["id"])
 
-        if not shape:
-            continue
         pos = interpolate_position(shape, new_progress)
         trips = truck_trips[p_idx]
         t_idx = current_trip_index(trip_lengths[p_idx], new_progress)
         remaining_min = max(0.0, total_duration_min * (1 - new_progress))
         status_label = "✅ Livraison terminée" if new_progress >= 1.0 else f"Trajet {t_idx + 1}/{len(trips)} en cours"
 
-        folium.Marker(
-            pos,
-            popup=(f"<b>Camion V{p_idx + 1}</b><br>{status_label}<br>"
-                   f"Avancement rotation : {new_progress * 100:.0f}%<br>"
-                   f"Position GPS : {pos[0]:.5f}, {pos[1]:.5f}<br>"
-                   f"Temps restant estimé : {remaining_min:.0f} min simulées"),
-            tooltip=f"V{p_idx + 1} — {status_label}",
-            icon=folium.Icon(color=route_colors[p_idx % len(route_colors)], icon="truck", prefix="fa"),
-        ).add_to(m)
+        trucks_payload.append({
+            "label": f"V{p_idx + 1}", "color": color, "used": True,
+            "shape": shape, "trip_shapes": trip_shapes[p_idx],
+            "total_km": total_km, "traveled_km": traveled_km, "speed_kmh": truck_speed_kmh,
+            "animate": auto_run, "sim_minutes_per_real_second": sim_minutes_per_real_second,
+            "status_label": status_label,
+        })
         truck_gps_status.append({
             "Camion": f"V{p_idx + 1}",
             "Statut": status_label,
@@ -565,7 +544,12 @@ with col_map:
 
     st.session_state.delivered_ids = delivered_ids
 
-    st_folium(m, width="100%", height=520, key="dvrp_map")
+    # Carte Leaflet animée côté navigateur : le déplacement des camions est interpolé
+    # en JS (requestAnimationFrame), donc visuellement fluide et continu, sans dépendre
+    # du rythme des rerun Streamlit — contrairement à l'ancienne carte folium/st_folium
+    # qui « sautait » à chaque rafraîchissement.
+    map_html = render_animated_map_html(depot_coords, orders_payload, trucks_payload, height=520)
+    components.html(map_html, height=530, scrolling=False)
 
     st.caption(
         f"🕒 Accélération : {time_accel_label.lower()} · 🚚 Vitesse moyenne assumée : "
