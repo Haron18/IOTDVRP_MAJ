@@ -52,8 +52,9 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
-from dvrp_map_component import dvrp_map
+from animated_map import render_animated_map_html
 from benchmark_loader import COLUMNS, get_real_algiers_dataset, generate_solomon_benchmark
 from dvrp_engine import (
     get_osrm_distance_matrix,
@@ -348,13 +349,6 @@ def render_simulation():
     sim_time = int(sim_time)
     st.sidebar.caption(f"⏱️ {sim_time // 60}h{sim_time % 60:02d} écoulées depuis le début de la tournée")
 
-    if not st.session_state.simulation_started:
-        st.info(
-            "🚀 Cliquez sur **« Démarrer la simulation »** dans la barre latérale pour "
-            "calculer et afficher les tournées optimisées, la carte et le suivi des camions."
-        )
-        return
-
     if st.session_state.extra_orders:
         new_ids = {o["id"] for o in st.session_state.extra_orders}
         orders_df = pd.concat(
@@ -644,11 +638,12 @@ def render_simulation():
                     f"ont terminé leur rotation."
                 )
 
-        # Vrai composant Streamlit en React (dvrp_map_component/) : le déplacement des
-        # camions est interpolé côté navigateur (requestAnimationFrame), donc visuellement
-        # fluide et continu, sans dépendre du rythme des rerun Streamlit — contrairement à
-        # l'ancienne carte folium/st_folium qui « sautait » à chaque rafraîchissement.
-        dvrp_map(depot_coords, orders_payload, trucks_payload, height=520, key="dvrp_map")
+        # Carte Leaflet animée côté navigateur : le déplacement des camions est interpolé
+        # en JS (requestAnimationFrame), donc visuellement fluide et continu, sans dépendre
+        # du rythme des rerun Streamlit — contrairement à l'ancienne carte folium/st_folium
+        # qui « sautait » à chaque rafraîchissement.
+        map_html = render_animated_map_html(depot_coords, orders_payload, trucks_payload, height=520)
+        components.html(map_html, height=530, scrolling=False)
 
         st.caption(
             f"🕒 Accélération : {time_accel_label.lower()} · 🚚 Vitesse moyenne assumée : "
