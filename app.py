@@ -84,9 +84,10 @@ DEFAULTS = {
     "traffic_penalty": 1.0,   # multiplicateur appliqué à la matrice de distances
     "truck_progress_km": {},  # distance déjà parcourue (km) par chaque camion sur sa rotation
     "delivered_ids": set(),   # commandes déjà livrées (calculé à partir du tracking)
-    "sim_clock_min": 45.0,     # horloge de simulation UNIQUE (min depuis le début de journée) :
+    "sim_clock_min": 0.0,      # horloge de simulation UNIQUE (min depuis le début de journée) :
                                # pilote à la fois l'apparition des commandes ET le tracking
                                # des camions ; avance automatiquement avec la simulation.
+    "simulation_started": False,  # l'horloge ne bouge pas tant que ce n'est pas True
     "initial_snapshot": None, # paramètres au démarrage (capturés une fois)
     "final_snapshot": None,   # données finales, capturées quand la tournée est terminée
 }
@@ -152,15 +153,24 @@ time_accel_label = st.sidebar.selectbox(
 real_minutes_per_sim_hour = time_accel_options[time_accel_label]
 sim_minutes_per_real_second = 60 / (real_minutes_per_sim_hour * 60)
 
+if not st.session_state.simulation_started:
+    if st.sidebar.button("🚀 Démarrer la simulation", type="primary"):
+        st.session_state.simulation_started = True
+    st.sidebar.caption("⏸️ Horloge à 0 min — cliquez pour démarrer la tournée.")
+else:
+    st.sidebar.success("▶️ Simulation démarrée")
+
 col_track1, col_track2 = st.sidebar.columns(2)
-manual_advance_clicked = col_track1.button("➡️ +10 min simulées")
+manual_advance_clicked = col_track1.button("➡️ +10 min simulées") and st.session_state.simulation_started
 reset_clicked = col_track2.button("🔄 Réinitialiser l'horloge")
 if reset_clicked:
     st.session_state.truck_progress_km = {}
-    st.session_state.sim_clock_min = 45.0
+    st.session_state.sim_clock_min = 0.0
+    st.session_state.simulation_started = False
     st.session_state.final_snapshot = None
 
 auto_run = st.sidebar.toggle("▶️ Simulation temps réel (auto-refresh)", value=False)
+auto_run = auto_run and st.session_state.simulation_started
 sim_speed = st.sidebar.slider("Fréquence de rafraîchissement (sec)", 2, 10, 3)
 
 # L'avancée de l'horloge et l'affichage du curseur se font désormais à l'intérieur du
