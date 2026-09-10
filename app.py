@@ -349,6 +349,13 @@ def render_simulation():
     sim_time = int(sim_time)
     st.sidebar.caption(f"⏱️ {sim_time // 60}h{sim_time % 60:02d} écoulées depuis le début de la tournée")
 
+    if not st.session_state.simulation_started:
+        st.info(
+            "🚀 Cliquez sur **« Démarrer la simulation »** dans la barre latérale pour "
+            "calculer et afficher les tournées optimisées, la carte et le suivi des camions."
+        )
+        return
+
     if st.session_state.extra_orders:
         new_ids = {o["id"] for o in st.session_state.extra_orders}
         orders_df = pd.concat(
