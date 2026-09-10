@@ -52,9 +52,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
-from animated_map import render_animated_map_html
+from dvrp_map_component import dvrp_map
 from benchmark_loader import COLUMNS, get_real_algiers_dataset, generate_solomon_benchmark
 from dvrp_engine import (
     get_osrm_distance_matrix,
@@ -645,12 +644,11 @@ def render_simulation():
                     f"ont terminé leur rotation."
                 )
 
-        # Carte Leaflet animée côté navigateur : le déplacement des camions est interpolé
-        # en JS (requestAnimationFrame), donc visuellement fluide et continu, sans dépendre
-        # du rythme des rerun Streamlit — contrairement à l'ancienne carte folium/st_folium
-        # qui « sautait » à chaque rafraîchissement.
-        map_html = render_animated_map_html(depot_coords, orders_payload, trucks_payload, height=520)
-        components.html(map_html, height=530, scrolling=False)
+        # Vrai composant Streamlit en React (dvrp_map_component/) : le déplacement des
+        # camions est interpolé côté navigateur (requestAnimationFrame), donc visuellement
+        # fluide et continu, sans dépendre du rythme des rerun Streamlit — contrairement à
+        # l'ancienne carte folium/st_folium qui « sautait » à chaque rafraîchissement.
+        dvrp_map(depot_coords, orders_payload, trucks_payload, height=520, key="dvrp_map")
 
         st.caption(
             f"🕒 Accélération : {time_accel_label.lower()} · 🚚 Vitesse moyenne assumée : "
